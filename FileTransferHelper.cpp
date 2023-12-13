@@ -11,7 +11,8 @@
 constexpr int WAIT_INTERVAL_MS = 200;
 
 std::vector<std::vector<uint8_t>> incomingFileBlocks;
-std::chrono::steady_clock::time_point lastExecutionTimeRequestMsg2;
+std::chrono::steady_clock::time_point lastExecutionTimeRequestMsg2 =
+        std::chrono::steady_clock::now()-std::chrono::milliseconds(WAIT_INTERVAL_MS);;
 
 uint32_t blockAmountToReceive = 0;
 uint32_t alreadyReceivedBlocks = 0;
@@ -252,16 +253,18 @@ int processDataMessageProtocolMessageThree(std::deque<uint8_t> &receivingQueue, 
 
 
 void processIndex(std::queue<std::vector<uint8_t>> &preSendingQueueCommands, int index, std::chrono::steady_clock::time_point currentTime) {
-
+    std::chrono::milliseconds elapsedTime = duration_cast<std::chrono::milliseconds>(currentTime - lastExecutionTimeRequestMsg2);
     uint32_t twoPercentBlockAmount = blockAmountToReceive / 50;
+
     /** Wenn wir ein Paket verpasst haben schicken wir einen erneuten Request, ebenfalls falls wir das komplette hintere Ende der Datei verpasst haben und
      * die Blocknummern schon wieder kleiner sind als die bisher schon erhaltenen Blocknummern. Allerdings nur wenn der aktuelle index weiter vorne liegt als 2%
-     * der Gesamtpaketmenge, ansonsten ignorieren wir die 1,99% doppelten Pakete einfach. */
-    if (index > 0 && ((index > alreadyReceivedBlocks) || (index < (alreadyReceivedBlocks - twoPercentBlockAmount))) && index < blockAmountToReceive) {
+     * der Gesamtpaketmenge, ansonsten ignorieren wir die 1,99% doppelten Pakete einfach. Wir schicken den Request nur noch 200ms erneut */
+    if (elapsedTime.count() >= WAIT_INTERVAL_MS && index > 0 && ((index > alreadyReceivedBlocks) || (index < (alreadyReceivedBlocks - twoPercentBlockAmount))) && index < blockAmountToReceive) {
 
         //Wenn der Index des datenpakets zu weit ist fehlen uns pakete und wir fordern eine Wiederholung ab dem letzten erfolgreichen Paket an,
         // damit es möglichst sofort gesendet wird an die spitze der Pre-SendingQueue
         preSendingQueueCommands.push(createBlockRepeatRequest(alreadyReceivedBlocks));
+        lastExecutionTimeRequestMsg2 = std::chrono::steady_clock::now();
     }
 
     /** erhalten wir den letzten Block schicken wir einen erneuten request mit einem Nummer hinter der Blockanzahl den der Empfänger als ACK interpretiert */
