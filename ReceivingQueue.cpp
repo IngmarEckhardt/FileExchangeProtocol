@@ -17,25 +17,26 @@ uint8_t calculateCRCXOR(const uint8_t *data, size_t length) {
     return crc;
 }
 
+bool waitForQueueElements(std::deque<uint8_t> &receivingQueue, int numElements, int maxAttempts) {
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+        if (receivingQueue.size() >= numElements) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1 << attempt));
+    }
+    return false;
+}
+
 
 uint8_t getNextByte(std::deque<uint8_t> &receivingQueue) {
 
-    if (receivingQueue.size() < 2) {
-        // Not enough elements in the queue to form a complete byte
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-
-        if (receivingQueue.size() < 2) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(4));
-            if (receivingQueue.size() < 2) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(16));
-                // Still not enough elements in the queue to form a complete byte
-                if (!receivingQueue.empty()) {
-                    // Delete the last remaining element
-                    receivingQueue.pop_back();
-                }
-                return 0;
-            }
+    if (!waitForQueueElements(receivingQueue, 2, 4)) {
+        // Still not enough elements in the queue to form a complete byte
+        if (!receivingQueue.empty()) {
+            // Delete the last remaining element
+            receivingQueue.pop_back();
         }
+        return 0;
     }
 
     uint8_t upperHalfByte = receivingQueue.front();
@@ -43,18 +44,47 @@ uint8_t getNextByte(std::deque<uint8_t> &receivingQueue) {
 
     uint8_t lowerHalfByte = receivingQueue.front();
     receivingQueue.pop_front();
+
+    /** ESC-Character als ganzes Byte löschen indem das nächste genommen wird */
     if ((upperHalfByte == ESC1high && lowerHalfByte == ESC1low) ||
         (upperHalfByte == ESC2high && lowerHalfByte == ESC2low)) {
+
+        if (!waitForQueueElements(receivingQueue, 2, 4)) {
+            // Still not enough elements in the queue to form a complete byte
+            if (!receivingQueue.empty()) {
+                // Delete the last remaining element
+                receivingQueue.pop_back();
+            }
+            return 0;
+        }
+
+
         upperHalfByte = receivingQueue.front();
         receivingQueue.pop_front();
 
         lowerHalfByte = receivingQueue.front();
         receivingQueue.pop_front();
-    } else if (lowerHalfByte == ESC1high || lowerHalfByte == ESC2high) {
 
-        uint8_t nextLowerHalfByte = receivingQueue.front();
+    } else if (lowerHalfByte == ESC1high || lowerHalfByte == ESC2high) {
+        uint8_t nextLowerHalfByte;
+        /** auch ESC-Character die zwischen zwei identische Halbbytes eingeschoben wurden werden gelöscht. Wir betrachten
+         * das nächst*/
+        if (waitForQueueElements(receivingQueue, 1, 3)) {
+            nextLowerHalfByte = receivingQueue.front();
+        }
         if ((lowerHalfByte == ESC1high && nextLowerHalfByte == ESC1low) ||
             (lowerHalfByte == ESC2high && nextLowerHalfByte == ESC2low)) {
+
+            if (!waitForQueueElements(receivingQueue, 2, 4)) {
+                // Still not enough elements in the queue to form a complete byte
+                if (!receivingQueue.empty()) {
+                    // Delete the last remaining element
+                    receivingQueue.pop_back();
+                }
+                return 0;
+            }
+
+
             receivingQueue.pop_front();
             lowerHalfByte = receivingQueue.front();
             receivingQueue.pop_front();

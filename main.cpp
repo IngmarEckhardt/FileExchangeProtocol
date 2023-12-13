@@ -6,6 +6,7 @@
 #include "PipeParser.h"
 #include "FileTransferHelper.h"
 #include <thread>
+#include <cstring>
 
 using namespace std;
 
@@ -44,9 +45,9 @@ void handleStartArgs(int argc, char *const *argv) {
             // Setze einen Boolean-Wert entsprechend
             secondComputer = true;
 
-            cout << "second computer uses upper bit of the port for sending" << endl;
+//            cout << "second computer uses upper bit of the port for sending" << endl;
         } else {
-            cout << "first computer uses lower bits of the port for sending" << endl;
+//            cout << "first computer uses lower bits of the port for sending" << endl;
         }
     }
     if (argc > 2) {
@@ -54,20 +55,20 @@ void handleStartArgs(int argc, char *const *argv) {
             // Setze einen Boolean-Wert entsprechend
             fileTransmissionModus = true;
 
-            std::cout << "starting file transmission" << std::endl;
+//            std::cout << "starting file transmission" << std::endl;
         }
     } else {
-        std::cout << "Kein Parameter übergeben." << std::endl;
+//        std::cout << "Kein Parameter übergeben." << std::endl;
     }
     if (argc > 3) {
         if (std::strcmp(argv[3], "-file") == 0) {
             // Setze einen Boolean-Wert entsprechend
             safeFile = true;
 
-            std::cout << "saving file" << std::endl;
+//            std::cout << "saving file" << std::endl;
         }
     } else {
-        std::cout << "Kein Parameter übergeben." << std::endl;
+//        std::cout << "Kein Parameter übergeben." << std::endl;
     }
 }
 
@@ -153,6 +154,8 @@ void setLowerFourBitsAsOutputRegister() {
 
 
 int main(int argc, char *argv[]) {
+
+    /** StartArgumente */
     handleStartArgs(argc, argv);
     if (secondComputer) {
         setUpperFourBitsAsOutputRegister();
@@ -160,9 +163,11 @@ int main(int argc, char *argv[]) {
         setLowerFourBitsAsOutputRegister();
     }
 
+    /** Threads die die Queues handeln und aus User-ESC lauschen */
     std::thread dataExchangeThread(dataExchangeLoop);
     std::thread preQueueThread(preQueueAndWaitForEscAndEnterLoop);
 
+    /** pipes*/
 //windows
     HANDLE pipeHandle = GetStdHandle(STD_INPUT_HANDLE);
     //linux
@@ -199,9 +204,6 @@ int main(int argc, char *argv[]) {
         //erst danach wird begonnen auf Enter oder ESC zu lauschen
         parseCinInput = true;
 
-
-        dataExchangeThread.join();
-        preQueueThread.join();
         fileTransmissionThread.join();
 
 
@@ -230,18 +232,33 @@ int main(int argc, char *argv[]) {
 
         //erst wenn die Textnachricht von der Pipe gelesen wurde, wird begonnen auf Enter oder ESC zu lauschen
         parseCinInput = true;
-        //escPressed wird ebenfalls auf true gesetzt wenn ein geprüfter Text-Input erkannt und auf die cout ausgegeben wurde
+
+        bool messageReceived = false;
+        std::chrono::steady_clock::time_point lastExecutionTime = std::chrono::steady_clock::now();
+
         while (!escPressed) {
-            readTextInput(receivingQueue, escPressed);
-            for (size_t i = 0; i < arrayLength; ++i) {
-                putByteAsHalfBytesInSendingQueue(byteArray[i], sendingQueue);
+            std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
+            std::chrono::milliseconds elapsedTime = duration_cast<std::chrono::milliseconds>(currentTime - lastExecutionTime);
+
+            //wir lesen die Empfangsqueue nur solange bis die erste Message erkannt wurde
+            while (!messageReceived) {
+                readTextInput(receivingQueue, messageReceived);
+            }
+
+            //Wir schicken die Nachricht jede viertel Sekunde. Bei 4kByte maximal kommen selbst innerhalb einer Stunde nur <60Mb zusammen
+            if (elapsedTime.count() >= 250) {
+                for (size_t i = 0; i < arrayLength; ++i) {
+                    putByteAsHalfBytesInSendingQueue(byteArray[i], sendingQueue);
+                }
+                lastExecutionTime = std::chrono::steady_clock::now();
             }
         }
         delete[] byteArray;
 
-        dataExchangeThread.join();
-        preQueueThread.join();
+
     }
+    dataExchangeThread.join();
+    preQueueThread.join();
     return 0;
 }
 
