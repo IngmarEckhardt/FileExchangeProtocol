@@ -263,7 +263,7 @@ void processIndex(std::queue<std::vector<uint8_t>> &preSendingQueueCommands, int
 
         //Wenn der Index des datenpakets zu weit ist fehlen uns pakete und wir fordern eine Wiederholung ab dem letzten erfolgreichen Paket an,
         // damit es möglichst sofort gesendet wird an die spitze der Pre-SendingQueue
-        preSendingQueueCommands.push(createBlockRepeatRequest(alreadyReceivedBlocks));
+        preSendingQueueCommands.push(createBlockRepeatRequest(alreadyReceivedBlocks+1));
         lastExecutionTimeRequestMsg2 = std::chrono::steady_clock::now();
     }
 
