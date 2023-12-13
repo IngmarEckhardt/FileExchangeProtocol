@@ -8,7 +8,10 @@
 #include "MessageComposer.h"
 #include "ControlCharacter.h"
 
+constexpr int WAIT_INTERVAL_MS = 200;
+
 std::vector<std::vector<uint8_t>> incomingFileBlocks;
+std::chrono::steady_clock::time_point lastExecutionTimeRequestMsg2;
 
 uint32_t blockAmountToReceive = 0;
 uint32_t alreadyReceivedBlocks = 0;
@@ -22,9 +25,10 @@ int misses = 0;
 
 
 bool incomingFileTransmissionAnnounced = false;
-bool ownFileTransmissionAnnounced = false;
+bool ownFileTransmission = false;
 bool ownFileTransmissionAccepted = true;
 bool ownFileTransmissionSuccessful = false;
+bool otherFileTransmissionSuccessful = false;
 bool clearPreSendingQueue = false;
 
 
@@ -247,7 +251,7 @@ int processDataMessageProtocolMessageThree(std::deque<uint8_t> &receivingQueue, 
 }
 
 
-void processIndex(std::queue<std::vector<uint8_t>> &preSendingQueueCommands, int index) {
+void processIndex(std::queue<std::vector<uint8_t>> &preSendingQueueCommands, int index, std::chrono::steady_clock::time_point currentTime) {
 
     uint32_t twoPercentBlockAmount = blockAmountToReceive / 50;
     /** Wenn wir ein Paket verpasst haben schicken wir einen erneuten Request, ebenfalls falls wir das komplette hintere Ende der Datei verpasst haben und
@@ -266,12 +270,13 @@ void processIndex(std::queue<std::vector<uint8_t>> &preSendingQueueCommands, int
         // wenn der index der Anzahl der Blöcke entspricht sollte auch unsere incomingFileBlocks die größe haben und wir senden
         // einen Request mit einem index + 1 um das erfolgreiche ankommen zu signalisieren
         preSendingQueueCommands.push(createBlockRepeatRequest(index + 1));
-        ownFileTransmissionSuccessful = true;
+        otherFileTransmissionSuccessful = true;
     }
 }
 
 void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::vector<uint8_t>> &preSendingQueueData,
-                           std::queue<std::vector<uint8_t>> &preSendingQueueCommands) {
+                           std::queue<std::vector<uint8_t>> &preSendingQueueCommands,
+                           std::chrono::steady_clock::time_point currentTime) {
     uint8_t currentByte = 0;
     std::vector<uint8_t> receivedBytes;
     // Wait for the Start of Header SOH character
@@ -284,7 +289,7 @@ void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::
 
 
         /** Fall 1 Niemand hat eine Datenübertragung angekündigt, wir warten auf die Ankündigung einer Datenübertragung, Msg1 */
-        if (!incomingFileTransmissionAnnounced && !ownFileTransmissionAnnounced) {
+        if (!incomingFileTransmissionAnnounced && !ownFileTransmission) {
             waitUntilReceivingQueueHasAnElement(receivingQueue);
             pullAByteWithCheckBefore(receivedBytes, receivingQueue, currentByte);
             if (currentByte == 0b0) {
@@ -295,7 +300,7 @@ void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::
 
             /** Fall 2, Wir warten auf reinkommende Daten, Msg3 und wenn der Index nicht stimmt und wir eine Lücke in den Daten haben
              * senden wir einen Request, Msg2, um den Index des Senders zurückzusetzen */
-        } else if (incomingFileTransmissionAnnounced && !ownFileTransmissionAnnounced) {
+        } else if (incomingFileTransmissionAnnounced && !ownFileTransmission) {
             int index = -1;
             waitUntilReceivingQueueHasAnElement(receivingQueue);
             pullAByteWithCheckBefore(receivedBytes, receivingQueue, currentByte);
@@ -306,12 +311,12 @@ void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::
                 receivedBytes.clear();
             }
 
-            processIndex(preSendingQueueCommands, index);
+            processIndex(preSendingQueueCommands, index, currentTime);
 
 
             /** Fall 3 Entweder wir bekommen einen Request weil wir die Datenübertragung einen Fehler hat,Msg2
              * oder wir bekommen eine Ankündigung einer Datenübertragung anderen,Msg1 */
-        } else if (!incomingFileTransmissionAnnounced && ownFileTransmissionAnnounced) {
+        } else if (!incomingFileTransmissionAnnounced && ownFileTransmission) {
 
             waitUntilReceivingQueueHasAnElement(receivingQueue);
             pullAByteWithCheckBefore(receivedBytes, receivingQueue, currentByte);
@@ -331,7 +336,7 @@ void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::
 
 
             /** Fall 4 Beide wollen senden, es können Daten, Msg3 oder Requests bei Fehlern, Msg2 reinkommen */
-        } else if (incomingFileTransmissionAnnounced && ownFileTransmissionAnnounced) {
+        } else if (incomingFileTransmissionAnnounced && ownFileTransmission) {
             int index = -1;
             waitUntilReceivingQueueHasAnElement(receivingQueue);
             pullAByteWithCheckBefore(receivedBytes, receivingQueue, currentByte);
@@ -345,7 +350,7 @@ void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::
             } else {
                 receivedBytes.clear();
             }
-            processIndex(preSendingQueueCommands, index);
+            processIndex(preSendingQueueCommands, index, currentTime);
         }
 
     }
@@ -392,7 +397,7 @@ void fileTransfer(std::queue<std::vector<uint8_t>> &preSendingQueueData,
                   std::queue<std::vector<uint8_t>> &preSendingQueueCommands, std::deque<uint8_t> &receivingQueue,
                   std::vector<std::vector<uint8_t>> &fileBlocks, bool &escapePressed, bool &safeFile) {
 
-    constexpr int WAIT_INTERVAL_MS = 200;
+
     constexpr int MAX_PRE_SENDING_QUEUE_SIZE = 200;
     std::chrono::steady_clock::time_point currentTime;
     std::chrono::milliseconds elapsedTime;
@@ -404,18 +409,18 @@ void fileTransfer(std::queue<std::vector<uint8_t>> &preSendingQueueData,
         currentTime = std::chrono::steady_clock::now();
         elapsedTime = duration_cast<std::chrono::milliseconds>(currentTime - lastExecutionTime);
 
-        parseIncomingMessages(receivingQueue, preSendingQueueData, preSendingQueueCommands);
+        parseIncomingMessages(receivingQueue, preSendingQueueData, preSendingQueueCommands, currentTime);
 
 
 
         //falls wir bisher keine Datei senden schauen wir nach solange bis das file-Array gefüllt ist, dann ändern wir den bool
-        if (!ownFileTransmissionAnnounced && !fileBlocks.empty()) {
-            ownFileTransmissionAnnounced = true;
+        if (!ownFileTransmission && !fileBlocks.empty()) {
+            ownFileTransmission = true;
         }
 
 
         //falls wir eine Datei senden wollen aber es wurde noch nicht akzeptiert senden wir unsere Ankündigung alle 200ms
-        if ((!ownFileTransmissionAccepted && ownFileTransmissionAnnounced) && elapsedTime.count() >= WAIT_INTERVAL_MS) {
+        if ((!ownFileTransmissionAccepted && ownFileTransmission) && elapsedTime.count() >= WAIT_INTERVAL_MS) {
             sendAnnouncementMsgOne(preSendingQueueCommands, fileBlocks.size());
             lastExecutionTime = std::chrono::steady_clock::now();
         }
@@ -445,7 +450,7 @@ void fileTransfer(std::queue<std::vector<uint8_t>> &preSendingQueueData,
 
 
         //wir sind fertig, speichern die Datei und geben sie über cout aus
-        if (ownFileTransmissionAccepted && ownFileTransmissionSuccessful) {
+        if (otherFileTransmissionSuccessful) {
             reconstructAndSaveFile(fileBlocks, "output.bin", safeFile);
         }
     }
