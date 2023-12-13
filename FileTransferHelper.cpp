@@ -12,12 +12,14 @@ std::vector<std::vector<uint8_t>> incomingFileBlocks;
 
 uint32_t blockAmountToReceive = 0;
 uint32_t alreadyReceivedBlocks = 0;
-
 uint32_t blockAmountToSend = 0;
-int nextFileIndexToSend = -1;
-
-int escapeCounter = 100.000;
+int currentFileBlockIndex = -1;
 int misses = 0;
+
+
+
+
+
 
 bool incomingFileTransmissionAnnounced = false;
 bool ownFileTransmissionAnnounced = false;
@@ -28,14 +30,8 @@ bool clearPreSendingQueue = false;
 
 //diese Funktion zählt nur bis 100.000 und checkt jedes Mal ob per 1 oder 8Mhz ein neues Zeichen ankam
 void waitUntilReceivingQueueHasAnElement(const std::deque<uint8_t> &receivingQueue) {
-    while (receivingQueue.empty() && misses < escapeCounter) {
-        misses++;
-        for (int i = 0; i < escapeCounter; i++) {
-            if (!receivingQueue.empty()) {
-                break;
-            }
-        }
-    }
+    constexpr int MAX_ESCAPE_COUNT = 100.000;
+    for (misses = 0; receivingQueue.empty() && misses < MAX_ESCAPE_COUNT; misses++) {}
 }
 
 //zieht ein komplettes Byte von der receivingQueue mit ihren Halbbytes und packt in die receivedBytes-Liste mit vollen Bytes
@@ -50,7 +46,7 @@ void pullAByteWithCheckBefore(std::vector<uint8_t> &receivedBytes, std::deque<ui
 
 
 //SOH und 0b0 wurden bereits von der Queue gezogen und zu receivedBytes hinzugefügt
-void searchForProtocolMessageOne(std::deque<uint8_t> &receivingQueue, std::vector<uint8_t> &receivedBytes) {
+void processTransferAnnouncementProtocolMessageOne(std::deque<uint8_t> &receivingQueue, std::vector<uint8_t> &receivedBytes) {
     uint8_t currentByte;
     //wir warten falls das zweite Zeichen noch nicht da ist
     do {
@@ -86,7 +82,7 @@ void searchForProtocolMessageOne(std::deque<uint8_t> &receivingQueue, std::vecto
 }
 
 // SOH und STX wurde vorher schon von der receiving Queue gezogen und receivedBytes hinzugefügt
-uint32_t searchForRequestProtocollMsgTwo(std::deque<uint8_t> &receivingQueue, std::vector<uint8_t> receivedBytes) {
+uint32_t searchForRequestProtocolMsgTwo(std::deque<uint8_t> &receivingQueue, std::vector<uint8_t> receivedBytes) {
     int intervallStart = 0;
     uint8_t currentByte = 0;
     //wir warten bzw ziehen die nächsten vier zeichen
@@ -120,8 +116,8 @@ uint32_t searchForRequestProtocollMsgTwo(std::deque<uint8_t> &receivingQueue, st
 }
 
 //SOH und STX wurden schon von der receiving Queue abgezogen und received Bytes hinzugefügt
-void checkAndProcessMsg2(std::deque<uint8_t> &receivingQueue, std::vector<uint8_t> &receivedBytes) {
-    uint32_t requestedBlock = searchForRequestProtocollMsgTwo(receivingQueue, receivedBytes);
+void processRequestMessageProtocolMessageTwo(std::deque<uint8_t> &receivingQueue, std::vector<uint8_t> &receivedBytes) {
+    uint32_t requestedBlock = searchForRequestProtocolMsgTwo(receivingQueue, receivedBytes);
 
     //wenn die Dateiübertragung abgeschlossen ist fragt der Empfänger noch einmal nach einem zusätzlichen Block, das wird als ACK gelesen
     if (requestedBlock > 1 && blockAmountToSend > 0 && requestedBlock == blockAmountToSend + 1) {
@@ -132,7 +128,7 @@ void checkAndProcessMsg2(std::deque<uint8_t> &receivingQueue, std::vector<uint8_
     } else if (requestedBlock > 1 && blockAmountToSend > 0 && requestedBlock < blockAmountToSend) {
 
         // falls der requested Block über 1 ist gab es einen übertragungsfehler und wir setzen den index zurück und setzen einen Bool damit die Pre-Sendequeue gelöscht wird
-        nextFileIndexToSend = requestedBlock - 1;
+        currentFileBlockIndex = requestedBlock - 1;
         clearPreSendingQueue = true;
 
         //falls der Block 1 abgefragt wird, wird die Datenübertragung gestartet
@@ -140,15 +136,17 @@ void checkAndProcessMsg2(std::deque<uint8_t> &receivingQueue, std::vector<uint8_
 
 
         ownFileTransmissionAccepted = true;
-        nextFileIndexToSend = 0;
+        currentFileBlockIndex = 0;
     }
     receivedBytes.clear();
 }
 
 std::vector<uint8_t> readDataBlock(std::deque<uint8_t> &receivingQueue, bool &lastBlock) {
+    const std::size_t BLOCKSIZE = 4 * 1024;
     std::vector<uint8_t> datablock;
     uint8_t currentByte = 0b0;
-    for (int i = 0; i < 4000; i++) {
+
+    for (int i = 0; i < BLOCKSIZE; i++) {
         waitUntilReceivingQueueHasAnElement(receivingQueue);
         if (!receivingQueue.empty()) {
             misses = 0;
@@ -166,7 +164,7 @@ std::vector<uint8_t> readDataBlock(std::deque<uint8_t> &receivingQueue, bool &la
     return datablock;
 }
 
-int searchForProtocollMsgThree(std::deque<uint8_t> &receivingQueue, std::vector<uint8_t> &receivedBytes) {
+int processDataMessageProtocolMessageThree(std::deque<uint8_t> &receivingQueue, std::vector<uint8_t> &receivedBytes) {
     uint8_t currentByte;
     std::vector<uint8_t> datablock;
     int32_t index = -1;
@@ -191,7 +189,6 @@ int searchForProtocollMsgThree(std::deque<uint8_t> &receivingQueue, std::vector<
                 (static_cast<uint32_t>(secondSignificantByte) << 8) |
                 static_cast<uint32_t>(leastSignificantByte);
 
-        // der index des nächsten gebrauchten Pakets ist immer +1 von den schon empfangenen Paketen
 
         waitUntilReceivingQueueHasAnElement(receivingQueue);
         if (!receivingQueue.empty()) {
@@ -291,7 +288,7 @@ void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::
             waitUntilReceivingQueueHasAnElement(receivingQueue);
             pullAByteWithCheckBefore(receivedBytes, receivingQueue, currentByte);
             if (currentByte == 0b0) {
-                searchForProtocolMessageOne(receivingQueue, receivedBytes);
+                processTransferAnnouncementProtocolMessageOne(receivingQueue, receivedBytes);
             } else {
                 receivedBytes.clear();
             }
@@ -304,7 +301,7 @@ void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::
             pullAByteWithCheckBefore(receivedBytes, receivingQueue, currentByte);
 
             if (currentByte == 0b0) {
-                index = searchForProtocollMsgThree(receivingQueue, receivedBytes);
+                index = processDataMessageProtocolMessageThree(receivingQueue, receivedBytes);
             } else {
                 receivedBytes.clear();
             }
@@ -323,11 +320,11 @@ void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::
             // falls wir die Dateiübertragung gestartet haben und ein anderer Index kommt löschen wir die Pre-Sending-Queue, bis auf die erste Nachricht
             //und befüllen sie wieder mit Blöcken ab dem nachgefragten Index
             if (currentByte == STX) {
-                checkAndProcessMsg2(receivingQueue, receivedBytes);
+                processRequestMessageProtocolMessageTwo(receivingQueue, receivedBytes);
 
                 // Wenn es keine Message 2 ist, wird uns eine Datenübertragung angekündigt
             } else if (currentByte == 0b0) {
-                searchForProtocolMessageOne(receivingQueue, receivedBytes);
+                processTransferAnnouncementProtocolMessageOne(receivingQueue, receivedBytes);
             } else {
                 receivedBytes.clear();
             }
@@ -340,11 +337,11 @@ void parseIncomingMessages(std::deque<uint8_t> &receivingQueue, std::queue<std::
             pullAByteWithCheckBefore(receivedBytes, receivingQueue, currentByte);
 
             if (currentByte == STX) {
-                checkAndProcessMsg2(receivingQueue, receivedBytes);
+                processRequestMessageProtocolMessageTwo(receivingQueue, receivedBytes);
 
                 // Wenn es keine Message 2 ist, kommen Daten rein
             } else if (currentByte == 0b0) {
-                index = searchForProtocollMsgThree(receivingQueue, receivedBytes);
+                index = processDataMessageProtocolMessageThree(receivingQueue, receivedBytes);
             } else {
                 receivedBytes.clear();
             }
@@ -391,51 +388,59 @@ void reconstructAndSaveFile(const std::vector<std::vector<uint8_t>> &fileBlocks,
 
 }
 
-void startFileTransfer(std::queue<std::vector<uint8_t>> &preSendingQueueData,
-                       std::queue<std::vector<uint8_t>> &preSendingQueueCommands, std::deque<uint8_t> &receivingQueue,
-                       std::vector<std::vector<uint8_t>> &fileBlocks, bool &escapePressed, bool &safeFile) {
+void fileTransfer(std::queue<std::vector<uint8_t>> &preSendingQueueData,
+                  std::queue<std::vector<uint8_t>> &preSendingQueueCommands, std::deque<uint8_t> &receivingQueue,
+                  std::vector<std::vector<uint8_t>> &fileBlocks, bool &escapePressed, bool &safeFile) {
 
-    //wir legen die letzten executionTime in die Vergangenheit
-    std::chrono::steady_clock::time_point lastExecutionTime = std::chrono::steady_clock::now()-std::chrono::milliseconds(200);
+    constexpr int WAIT_INTERVAL_MS = 200;
+    constexpr int MAX_PRE_SENDING_QUEUE_SIZE = 200;
+    std::chrono::steady_clock::time_point currentTime;
+    std::chrono::milliseconds elapsedTime;
+    //wir legen die erste executionTime in die Vergangenheit
+    std::chrono::steady_clock::time_point lastExecutionTime = std::chrono::steady_clock::now()-std::chrono::milliseconds(WAIT_INTERVAL_MS);
+
 
     while (!escapePressed) {
-        //als erstes die Eingangsschlange lesen
+        currentTime = std::chrono::steady_clock::now();
+        elapsedTime = duration_cast<std::chrono::milliseconds>(currentTime - lastExecutionTime);
+
         parseIncomingMessages(receivingQueue, preSendingQueueData, preSendingQueueCommands);
-        std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
-        std::chrono::milliseconds elapsedTime = duration_cast<std::chrono::milliseconds>(currentTime - lastExecutionTime);
+
+
 
         //falls wir bisher keine Datei senden schauen wir nach solange bis das file-Array gefüllt ist, dann ändern wir den bool
-        if (!ownFileTransmissionAnnounced) {
-            if (!fileBlocks.empty()) {
-                ownFileTransmissionAnnounced = true;
-            }
+        if (!ownFileTransmissionAnnounced && !fileBlocks.empty()) {
+            ownFileTransmissionAnnounced = true;
         }
 
+
         //falls wir eine Datei senden wollen aber es wurde noch nicht akzeptiert senden wir unsere Ankündigung alle 200ms
-        if ((!ownFileTransmissionAccepted && ownFileTransmissionAnnounced) && elapsedTime.count() >= 200) {
+        if ((!ownFileTransmissionAccepted && ownFileTransmissionAnnounced) && elapsedTime.count() >= WAIT_INTERVAL_MS) {
             sendAnnouncementMsgOne(preSendingQueueCommands, fileBlocks.size());
             lastExecutionTime = std::chrono::steady_clock::now();
         }
 
+
         //wenn die Übertragung akzeptiert wurde, und wir eine Nachricht erhalten dass es eine Lücke in der Übertragung gibt
         //wenn der boole clearPreSendingQueue gesetzt wurde, wurde der index zurückgesetzt, wir befüllen die pre-SendingQueue erneut
-        if (ownFileTransmissionAccepted && !ownFileTransmissionSuccessful && nextFileIndexToSend >= 0 &&
-            nextFileIndexToSend < blockAmountToSend - 1 && clearPreSendingQueue) {
+        if (ownFileTransmissionAccepted && !ownFileTransmissionSuccessful && currentFileBlockIndex >= 0 &&
+            currentFileBlockIndex < blockAmountToSend - 1 && clearPreSendingQueue) {
 
             //die komplette Queue wird neu angelegt und damit gelöscht
             preSendingQueueData = std::queue<std::vector<uint8_t>>();
             clearPreSendingQueue = false;
 
-            putNextDataMsgThreeInPreSendingQueue(fileBlocks, nextFileIndexToSend++, preSendingQueueData);
+            putNextDataMsgThreeInPreSendingQueue(fileBlocks, currentFileBlockIndex++, preSendingQueueData);
         }
 
+
         // wenn die Pre-Sende-Queue durch den Thread der die Daten in die eigenetliche Sendequeue schaufelt kleiner als 200 elemente ist, stecken wir das nächste rein
-        if (ownFileTransmissionAccepted && !ownFileTransmissionSuccessful && nextFileIndexToSend >= 0 &&
-            nextFileIndexToSend < blockAmountToSend - 1 && preSendingQueueData.size() < 200 && !clearPreSendingQueue) {
+        if (ownFileTransmissionAccepted && !ownFileTransmissionSuccessful && currentFileBlockIndex >= 0 &&
+            currentFileBlockIndex < blockAmountToSend - 1 && preSendingQueueData.size() < MAX_PRE_SENDING_QUEUE_SIZE && !clearPreSendingQueue) {
 
             //wir sorgen dafür dass die Datei mehrfach gesendet wird, indem der index auf 0 gesetzt wird, sobald wir am Ende angelangt sind
-            nextFileIndexToSend %= blockAmountToSend - 1;
-            putNextDataMsgThreeInPreSendingQueue(fileBlocks, nextFileIndexToSend++, preSendingQueueData);
+            currentFileBlockIndex %= blockAmountToSend - 1;
+            putNextDataMsgThreeInPreSendingQueue(fileBlocks, currentFileBlockIndex++, preSendingQueueData);
         }
 
 

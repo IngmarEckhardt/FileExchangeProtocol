@@ -137,7 +137,7 @@ void preQueueAndWaitForEscAndEnterLoop() {
 }
 
 void fileExchangeProtokoll() {
-    startFileTransfer(preSendingQueueData, preSendingQueueCommands, receivingQueue, fileBlocks, escPressed, safeFile);
+    fileTransfer(preSendingQueueData, preSendingQueueCommands, receivingQueue, fileBlocks, escPressed, safeFile);
 }
 
 void setUpperFourBitsAsOutputRegister() {
